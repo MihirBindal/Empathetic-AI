@@ -8,3 +8,4 @@ accelerate
 chromadb
 sentence-transformers
 datasets
+python-dotenv
