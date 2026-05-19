@@ -1,0 +1,28 @@
+# Virtual Environments
+venv_pdf/
+venv/
+env/
+.env
+
+# Cache & Compiled Files
+__pycache__/
+*.pyc
+*.pyo
+huggingface_tokenizers_cache/
+unsloth_compiled_cache/
+.pytest_cache/
+*.tex
+*.pdf
+
+# Database
+chroma_db/
+*.sqlite3
+*.db
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Model weights & Checkpoints
+models/
+Project_Empathy_Adapter/

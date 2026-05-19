@@ -1,0 +1,168 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\geometry{margin=1in}
+
+\title{\textbf{Project Empathy API: Comprehensive Viva Preparation Guide}}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+This document is a complete, in-depth breakdown of the Project Empathy API. It is designed to prepare the team for the viva by explaining every technical decision, model, dataset, and architectural flow used in the pipeline.
+
+\section{Introduction \& Motivation}
+
+\subsection{What is Empathy in AI?}
+Clinical empathy is not just saying "I am sorry you feel that way." It involves three steps:
+\begin{enumerate}
+    \item \textbf{Cognitive Empathy:} Recognizing and understanding the user's emotional state.
+    \item \textbf{Affective Empathy:} Validating those feelings without judgment.
+    \item \textbf{Action/Strategy:} Applying a therapeutic strategy (like Reflective Listening or Validation) before jumping to solutions.
+\end{enumerate}
+
+\subsection{The Problem with Current Models (The Baseline)}
+Standard Large Language Models (like base ChatGPT or LLaMA-3) are trained to be "Helpful Assistants." When a user expresses distress (e.g., "I am so overwhelmed with my deadlines"), standard models immediately try to \textit{fix} the problem. They provide bulleted to-do lists, unsolicited advice, and robotic affirmations. They lack the clinical patience to listen and validate first.
+
+\subsection{Our Expected Output}
+Our expected output is a warm, human-like response that prioritizes listening. It should identify the user's emotion, select a professional psychological strategy based on historical human therapist data, and generate a concise response that explores the emotion without immediately offering a "fix" (unless explicitly asked).
+
+\section{The Complete Pipeline Architecture}
+
+To solve the baseline problem, we built an \textbf{Agentic Pipeline} (The "Two-Brain" System). Instead of throwing the user's text blindly at a language model, we pass it through 5 distinct steps:
+
+\begin{itemize}
+    \item \textbf{Step 0 (Safety):} Is the user in a crisis?
+    \item \textbf{Step 1 (Emotion):} What are they feeling?
+    \item \textbf{Step 2 (RAG):} How have real therapists handled this feeling?
+    \item \textbf{Step 3 (Reasoning):} Based on the above, what strategy should we use?
+    \item \textbf{Step 4 (Generation):} Speak the response empathetically using the chosen strategy.
+\end{itemize}
+
+\section{In-Depth Pipeline Breakdown}
+
+\subsection{Step 0: The Safety Gatekeeper}
+\begin{itemize}
+    \item \textbf{What it does:} It acts as a firewall. If a user expresses suicidal ideation or self-harm, it stops the pipeline and returns emergency hotline numbers.
+    \item \textbf{The Model:} \texttt{sentinet/suicidality}
+    \begin{itemize}
+        \item This is a fine-tuned sequence classification model that uses the \textbf{MentalBERT} architecture as its foundation. 
+        \item \textit{Why not use base MentalBERT?} The base MentalBERT is just a language model; it lacks a trained "classification head." By using \texttt{sentinet/suicidality}, we are leveraging MentalBERT's deep understanding of clinical text, but with a classification head that has already been properly trained to output crisis probabilities.
+    \end{itemize}
+    \item \textbf{The Dataset:} The base architecture was pre-trained on Reddit mental health communities. The classification head was then fine-tuned on datasets containing explicit suicidality indicators and crisis logs (such as the Suicide and Depression Detection dataset).
+    \item \textbf{Input:} Raw user text.
+    \item \textbf{Output:} A probability score. If the score is $\ge 0.98$ (98\%), it aborts the pipeline.
+    \item \textbf{Hardware:} Runs on CPU to save VRAM.
+\end{itemize}
+
+\subsection{Step 1: Emotion Classifier}
+\begin{itemize}
+    \item \textbf{What it does:} Extracts the granular emotional state from the text.
+    \item \textbf{The Model:} \texttt{SamLowe/roberta-base-go\_emotions}
+    \begin{itemize}
+        \item This is a RoBERTa base model fine-tuned specifically for emotional multi-label classification.
+    \end{itemize}
+    \item \textbf{The Dataset:} \textbf{GoEmotions Dataset}
+    \begin{itemize}
+        \item \textbf{Description:} 58,000 Reddit comments manually annotated by humans.
+        \item \textbf{Classes:} 28 total classes (27 specific emotions like anger, sadness, fear, joy + 1 neutral).
+        \item \textbf{Example Row:} \texttt{"I can't believe I failed the test after studying so hard."} $\rightarrow$ \texttt{[Sadness: 0.85, Disappointment: 0.70, Anger: 0.30]}.
+    \end{itemize}
+    \item \textbf{Input:} Raw user text (truncated to 512 tokens).
+    \item \textbf{Output:} The \textbf{Top-3} emotions and their independent Sigmoid probabilities. (e.g., \texttt{[\{label: "sadness", score: 0.82\}, ...]}).
+    \begin{itemize}
+        \item \textbf{Note on Probabilities:} Because GoEmotions is a \textbf{Multi-Label} classification task (a user can feel sad and angry simultaneously), it uses independent Sigmoid activations for each class instead of Softmax. Therefore, the probabilities are evaluated independently and their sum can easily exceed 1.0 (or 100\%).
+    \end{itemize}
+\end{itemize}
+
+\subsection{Step 2: Contextual Retrieval (RAG Engine)}
+\begin{itemize}
+    \item \textbf{What is RAG?} Retrieval-Augmented Generation (RAG) is a technique where you give an AI access to an external database. Instead of relying on the AI's internal memory, it searches the database for relevant facts/examples and uses them to generate an answer.
+    \item \textbf{The Tools:} 
+    \begin{itemize}
+        \item \textbf{Vector Database:} \texttt{ChromaDB} (using HNSW algorithm for fast cosine similarity search).
+        \item \textbf{Embedder:} \texttt{sentence-transformers/all-MiniLM-L6-v2}. This is a highly efficient encoder that maps sentences into a 384-dimensional vector space for semantic comparison.
+    \end{itemize}
+    \item \textbf{The Dataset:} \textbf{ESConv (Emotional Support Conversation)}
+    \begin{itemize}
+        \item \textbf{Description:} A massive dataset of human-to-human support conversations.
+        \item \textbf{Structure:} Each entry contains \texttt{user\_text}, \texttt{emotion\_type}, \texttt{problem\_type}, the helper's \texttt{strategy}, and the helper's \texttt{response}.
+        \item \textbf{Taxonomy Mapping:} ESConv only has 11 core emotion classes. Because our Step 1 uses 28 classes, we built a \texttt{TAXONOMY\_MAP} to translate GoEmotions labels into ESConv labels (e.g., "annoyance" $\rightarrow$ "anger").
+    \end{itemize}
+    \item \textbf{How our Hybrid Weighted Search Works:}
+    \begin{enumerate}
+        \item It takes the Top 3 emotions from Step 1.
+        \item It strictly filters the database to only look at historical rows matching those emotions (Metadata Filtering).
+        \item \textbf{Candidate Fetching:} For \textit{each} of the 3 emotions, it embeds the user's text and fetches the top $k=5$ rows based on cosine similarity. This means it retrieves up to 15 candidate rows in total before reranking.
+        \item \textbf{The Math (Reranking):} It calculates a final score for each candidate: $\text{Weighted Score} = (1.0 - \text{Cosine Distance}) \times \text{Emotion Probability}$. It then removes duplicates, sorts them by this weighted score, and returns the final Top 5.
+    \end{enumerate}
+    \item \textbf{Output:} The Top 5 historical strategies and responses used by real therapists for this specific emotional context.
+\end{itemize}
+
+\subsection{Step 3: Reasoning (The "Brain")}
+\begin{itemize}
+    \item \textbf{What it does:} It acts as a clinical data processor. It analyzes the user's emotions and the RAG examples to select the single best therapeutic strategy.
+    \item \textbf{The Model:} \texttt{meta-llama/Meta-Llama-3-8B-Instruct} (Base Model).
+    \item \textbf{Crucial Technical Detail (Adapter Isolation):} In this step, we explicitly use \texttt{with self.qlora\_model.disable\_adapter():}. This turns OFF our empathy fine-tuning. Why? Because we want the model to be cold, logical, and strictly adhere to JSON formatting. Empathy fine-tuning degrades logical reasoning, so we isolate it.
+    \item \textbf{Input:} User text + Top 3 Emotions + The 5 RAG Examples.
+    \item \textbf{Hyperparameters:} \texttt{temperature = 0.2} (Very low, to prevent hallucination and ensure strict JSON compliance).
+    \item \textbf{Output:} A strict JSON object containing: \texttt{emotional\_analysis}, \texttt{chosen\_strategy}, and a 1-sentence \texttt{justification}.
+\end{itemize}
+
+\subsection{Step 4: Generation (The "Mouth")}
+\begin{itemize}
+    \item \textbf{What it does:} It takes the strategy selected by Step 3 and speaks it with a warm, clinical, empathetic tone.
+    \item \textbf{The Model:} \texttt{meta-llama/Meta-Llama-3-8B-Instruct} wrapped with a \textbf{QLoRA Adapter}.
+    \item \textbf{The Dataset (For the Adapter):} \textbf{Counsel-Chat Dataset}
+    \begin{itemize}
+        \item \textbf{Description:} Real questions asked by users and answered by verified expert therapists.
+        \item \textbf{Training Method:} The adapter was fine-tuned with prompts that explicitly included the "strategy" and "justification". This taught the model to obey the strategy command rather than just rambling.
+    \end{itemize}
+    \item \textbf{Hyperparameters:} 
+    \begin{itemize}
+        \item \texttt{load\_in\_4bit=True}, \texttt{bnb\_4bit\_quant\_type="nf4"}.
+        \item \texttt{temperature = 0.4} (Higher than reasoning, allowing for natural, human-like sentence structures).
+        \item \texttt{repetition\_penalty = 1.15}.
+    \end{itemize}
+    \item \textbf{Input:} User text + Emotion + Chosen Strategy (from Step 3) + Justification (from Step 3).
+    \item \textbf{Output:} The final empathetic response, wrapped in \texttt{<response>} tags.
+\end{itemize}
+
+\section{Expected Viva Questions \& Answers}
+
+\textbf{Q: What is LoRA and QLoRA? Why did you use it?}\\
+\textbf{A:} LoRA (Low-Rank Adaptation) is a fine-tuning technique. Instead of retraining all 8 Billion parameters of LLaMA-3 (which would require massive supercomputers), LoRA freezes the original model and injects tiny, trainable "rank decomposition matrices" into the layers. 
+\textbf{QLoRA} (Quantized LoRA) takes this further by quantizing (compressing) the base model into 4-bit precision (specifically NF4 - Normalized Float 4) while keeping the LoRA adapters in 16-bit. We used QLoRA so this massive model could fit inside the limited VRAM of a free-tier GPU like Google Colab (approx. 15GB), while still retaining near 16-bit performance.
+
+\vspace{0.5cm}
+
+\textbf{Q: Why separate the pipeline into "Reasoning" and "Generation"? Why not just ask the LLM to do it all at once?}\\
+\textbf{A:} When you ask a single LLM to analyze data, pick a strategy, and write a response all in one prompt, it suffers from "Task Interference." Fine-tuning an LLM to sound empathetic often damages its ability to follow strict logical rules. By isolating the steps---using the base model for logic (disabling the adapter) and the QLoRA model for speech (enabling the adapter)---we get the best of both worlds: flawless JSON logic and beautiful empathetic tone from a single 11GB footprint.
+
+\vspace{0.5cm}
+
+\textbf{Q: Your report shows a drop in the ROUGE score compared to the baseline. Isn't that a failure?}\\
+\textbf{A:} No, it is proof of success. ROUGE measures exact word overlap. The baseline LLaMA model and the raw ESConv dataset contain high amounts of "conversational filler" (e.g., "I completely understand", "I am so sorry to hear that"). In our Generation step, we explicitly prompted our QLoRA model to \textit{ban} cliché therapist phrases. Because we banned filler words, our word overlap (ROUGE) dropped, but the clinical quality and professionalism of our responses drastically increased.
+
+\vspace{0.5cm}
+
+\textbf{Q: Why use a RAG engine if the LLM already knows how to speak English?}\\
+\textbf{A:} LLMs are prone to hallucinating strategies or defaulting to generic advice. Our RAG engine grounds the LLM in actual clinical psychology. By searching the ESConv dataset, we force the LLM to look at how \textit{human professionals} handled the exact same emotional state before it is allowed to decide on a strategy.
+
+\vspace{0.5cm}
+
+\textbf{Q: How does your system handle user history?}\\
+\textbf{A:} Currently, the FastAPI architecture is stateless. To maintain context, our frontend (Streamlit) manages the history and concatenates the last 5 messages, sending them as an array in the \texttt{ChatRequest} payload. 
+
+\vspace{0.5cm}
+
+\textbf{Q: In Step 2 (RAG), how do you calculate the "Weighted Score"?}\\
+\textbf{A:} Because a user can have multiple emotions (e.g., 80\% Anger, 20\% Fear), we query the ChromaDB for each emotion separately. When a historical document is retrieved, its raw semantic similarity (Cosine Similarity) is multiplied by the emotion's probability score from Step 1. This ensures that strategies matching the user's \textit{dominant} emotion are ranked highest.
+
+\end{document}
